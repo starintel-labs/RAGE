@@ -31,8 +31,30 @@ Do not treat a plan, generated patch, existing file, merge, or green build as pr
 - `roam/indexes/` owns project indexes and roadmaps.
 - `scripts/` owns capture, lifecycle, synchronization, and validation.
 - `tests/` owns regression coverage for repository mechanics.
+- `skills/` owns phase-specific agent procedures.
 
 Use existing scripts before inventing parallel workflow machinery.
+
+## Skills
+
+Inspect `skills/README.md` and the frontmatter of relevant `skills/*/SKILL.md` files before beginning a non-trivial task.
+
+Use the smallest applicable skill set. Do not bulk-load every skill into context.
+
+- Use `rage-loop` when the task spans a complete RAGE cycle.
+- Use `rage-research` for evidence gathering and research-note work.
+- Use `rage-gate` when deciding whether a state transition is admitted.
+- Use `rage-execute` only after the active gate is open.
+- Use `rage-evaluate` to verify observed results against the gate.
+- Use `rage-recurse` to derive the next loop, repair path, or termination state.
+
+When several phases are required, apply them in this order:
+
+```text
+rage-research -> rage-gate -> rage-execute -> rage-evaluate -> rage-recurse
+```
+
+`rage-loop` may coordinate those phase skills but does not weaken their preconditions. Skills refine this file; they never override repository authority, permissions, required evidence, or observed state.
 
 ## Document contract
 
