@@ -137,8 +137,8 @@ def main() -> int:
     parser.add_argument(
         "--instruction",
         action="append",
-        default=["AGENTS.md"],
-        help="Observed applicable repository instruction path; repeat when nested instructions apply.",
+        default=[],
+        help="Observed applicable repository instruction path; repeat for every applicable file.",
     )
     args = parser.parse_args()
 
