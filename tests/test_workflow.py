@@ -11,6 +11,17 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from _roamlib import implementation_slot_problems, slugify  # noqa: E402
+from implement import append_research_manifest, resolve_research_inputs  # noqa: E402
+
+
+VALID_ORG = """:PROPERTIES:
+:ID: test-id
+:END:
+#+title: Research
+#+description: Research input
+#+status: REVIEW
+#+filetags: :rage:research:
+"""
 
 
 class RoamLibTests(unittest.TestCase):
@@ -39,6 +50,48 @@ class RoamLibTests(unittest.TestCase):
             problems = implementation_slot_problems(roam)
             self.assertEqual(len(problems), 1)
             self.assertIn("contains 2 Org files", problems[0])
+
+    def test_implementation_requires_research_org_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            roam = root / "roam"
+            (roam / "research" / "demo").mkdir(parents=True)
+            research = roam / "research" / "demo" / "finding.org"
+            research.write_text(VALID_ORG, encoding="utf-8")
+
+            resolved = resolve_research_inputs(
+                [str(research.relative_to(root))],
+                root=root,
+                roam=roam,
+                project="demo",
+            )
+            self.assertEqual(resolved, [research.resolve()])
+
+            with self.assertRaises(SystemExit):
+                resolve_research_inputs([], root=root, roam=roam, project="demo")
+            with self.assertRaises(SystemExit):
+                resolve_research_inputs(
+                    [str(research.relative_to(root))],
+                    root=root,
+                    roam=roam,
+                    project="other",
+                )
+
+    def test_active_implementation_records_files_first_research_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            research = root / "roam" / "research" / "demo" / "finding.org"
+            destination = root / "roam" / "implement" / "demo" / "design.org"
+            research.parent.mkdir(parents=True)
+            destination.parent.mkdir(parents=True)
+            research.write_text(VALID_ORG, encoding="utf-8")
+            destination.write_text(VALID_ORG, encoding="utf-8")
+
+            append_research_manifest(destination, [research], root=root)
+            text = destination.read_text(encoding="utf-8")
+            self.assertIn("* RAGE Research Inputs", text)
+            self.assertIn("Files-first contract", text)
+            self.assertIn("roam/research/demo/finding.org", text)
 
 
 if __name__ == "__main__":

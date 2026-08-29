@@ -44,6 +44,13 @@ def slugify(value: str) -> str:
     return slug[:64] or "work"
 
 
+def research_artifact(candidate: Candidate) -> tuple[str, str, str]:
+    project = slugify(candidate.repository.rsplit("/", 1)[-1])
+    title = f"Issue {candidate.number}: {candidate.title}"
+    path = f"roam/research/{project}/{slugify(title)}.org"
+    return project, title, path
+
+
 def build_work_packet(
     candidate: Candidate,
     *,
@@ -55,6 +62,8 @@ def build_work_packet(
         raise ValueError("Task Steward requires the exact remote default branch and head SHA")
     if not instructions:
         raise ValueError("Task Steward requires observed repository instructions before handoff")
+
+    research_project, research_title, research_path = research_artifact(candidate)
     return {
         "repository": candidate.repository,
         "issue": candidate.number,
@@ -67,6 +76,23 @@ def build_work_packet(
         "rage_required": True,
         "tests_first": True,
         "merge_authorized": False,
+        "research_contract": {
+            "required": True,
+            "format": "org",
+            "artifact": research_path,
+            "writer": "scripts/save-research.py",
+            "writer_args": {
+                "project": research_project,
+                "title": research_title,
+            },
+            "persist_each_pass": True,
+        },
+        "implementation_contract": {
+            "files_first": True,
+            "research_files": [research_path],
+            "input_order": ["research_files", "design", "repository"],
+            "promotion_requires_research": True,
+        },
     }
 
 

@@ -62,6 +62,37 @@ class TaskStewardTests(unittest.TestCase):
         self.assertTrue(packet["tests_first"])
         self.assertFalse(packet["merge_authorized"])
 
+    def test_requires_org_research_and_files_first_implementation(self) -> None:
+        candidate = Candidate("lost-rob0t/quasar", 61, "filesystem persistence", ("P0",))
+        packet = build_work_packet(
+            candidate,
+            default_branch="main",
+            head_sha="abc123",
+            instructions=("AGENTS.md",),
+        )
+
+        research = packet["research_contract"]
+        self.assertTrue(research["required"])
+        self.assertEqual(research["format"], "org")
+        self.assertEqual(
+            research["artifact"],
+            "roam/research/quasar/issue-61-filesystem-persistence.org",
+        )
+        self.assertEqual(research["writer"], "scripts/save-research.py")
+        self.assertTrue(research["persist_each_pass"])
+
+        implementation = packet["implementation_contract"]
+        self.assertTrue(implementation["files_first"])
+        self.assertEqual(
+            implementation["research_files"],
+            ["roam/research/quasar/issue-61-filesystem-persistence.org"],
+        )
+        self.assertEqual(
+            implementation["input_order"],
+            ["research_files", "design", "repository"],
+        )
+        self.assertTrue(implementation["promotion_requires_research"])
+
     def test_refuses_handoff_without_repo_instructions_or_exact_head(self) -> None:
         candidate = Candidate("lost-rob0t/quasar", 61, "persist", ("P0",))
         with self.assertRaises(ValueError):
