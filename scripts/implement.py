@@ -106,15 +106,17 @@ def main() -> int:
         raise SystemExit(f"design must be under {design_root}") from exc
     if not source.is_file():
         raise SystemExit(f"missing design: {source}")
-
-    validate_org_headers(source)
     if len(rel.parts) < 2:
         raise SystemExit("design must be inside a project directory")
 
     project = rel.parts[0]
+
+    # Files-first means the first substantive document reads are the persisted
+    # research artifacts. The design path is inspected only to resolve project scope.
     research_inputs = resolve_research_inputs(
         args.research, root=root, roam=roam, project=project
     )
+    validate_org_headers(source)
 
     active_dir = roam / "implement" / project
     active_dir.mkdir(parents=True, exist_ok=True)
