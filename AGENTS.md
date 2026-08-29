@@ -34,6 +34,26 @@ Do not treat a plan, generated patch, existing file, merge, or green build as pr
 
 Use existing scripts before inventing parallel workflow machinery.
 
+## Research persistence
+
+Automatic research is file-backed. Every research pass must create or append to a substantive Org artifact under `roam/research/<project>/` using `scripts/save-research.py` or an equivalent repository-approved writer. A worker response, issue comment, chat transcript, or in-memory result is not the research record.
+
+The worker handoff must name the expected Org artifact. Repeated passes update that artifact instead of keeping findings only in model context. Do not advance from research to design with a missing research file.
+
+## Files-first implementation
+
+Implementation consumes research files first. Before reading the design as an execution plan or changing repository code, the implementer must read every research Org file named in the handoff.
+
+Promote designs through `scripts/implement.py` with one or more `--research` arguments. Promotion must fail when research inputs are missing, outside the matching project subtree, non-Org, or invalid. The active implementation copy records the bound research inputs so the handoff remains inspectable.
+
+Input order is:
+
+1. research Org files;
+2. canonical design;
+3. current repository state and code.
+
+Current repository state still wins over stale claims, but code inspection must not replace the required research-file read.
+
 ## Document contract
 
 Every substantive Org document must contain:
