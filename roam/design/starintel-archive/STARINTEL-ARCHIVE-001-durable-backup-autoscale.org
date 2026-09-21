@@ -1,0 +1,582 @@
+:PROPERTIES:
+:ID: starintel-durable-archive-autoscale-001
+:END:
+#+title: StarIntel Durable Archive, Billing, and Auto-Scale Control Plane
+#+description: RAGE design for CouchDB backup, TEK9 archival, local/remote S3 custody, lifecycle policy, billing, and bounded Jev-style autoscaling.
+#+status: DESIGN_READY_FOR_IMPLEMENTATION
+#+filetags: :starintel:archive:backup:couchdb:tek9:s3:billing:autoscale:jev:rsi:
+
+* Approval Table
+
+| Approval area | Required authority | State | Evidence required | Evidence reference |
+|---------------+--------------------+-------+-------------------+--------------------|
+| Cross-repo architecture and implementation direction | Operator | APPROVED | Direct operator instruction | Operator conversation, 2026-09-20 |
+| USD 20 plan / USD 15 included API COGS / USD 5 base margin / +8% PAYG | Operator | APPROVED | Direct operator instruction | Operator conversation, 2026-09-20 |
+| Linode star-archive as long-term cold tier | Operator | APPROVED | Bucket/endpoint supplied by operator | star-archive.us-ord-10.linodeobjects.com |
+| Automatic source/hot-data deletion | Runtime retention gate | PENDING | Verified remote custody + successful restore proof + resolved policy generation | Must be produced per artifact |
+| CouchDB topology scale-in | Runtime safety gate | PENDING | Healthy topology + policy + fenced intent + post-change verification | Must be produced per action |
+| RSI candidate promotion | Prolog gate + operator for topology/policy changes | PENDING | Held-out replay + adversarial suite + shadow/canary + rollback artifact | Must be produced per model generation |
+
+* Changelog
+
+| Date | Change | Author or actor | Evidence |
+|------+--------+-----------------+----------|
+| 2026-09-20 | Initial cross-repo durable archive/autoscale design | ChatGPT on operator instruction | star-cl#15, infra#157, server#284/#285, biz#169/#170 |
+
+* Problem
+
+StarIntel needs a low-cost long-term archive that is also recoverable, auditable, and safe under partial failure. The operator additionally wants lifecycle/retention configuration in trusted =init.lisp=, policy overrides per target/type from server-side actors/plugins, durable commercial settlement, and an auto-scale actor for Star Server and CouchDB with a Jev-shaped RSI adviser.
+
+The system must not conflate:
+
+- process/add-on lifecycle with data-retention lifecycle;
+- backup upload with backup verification;
+- archive custody with billing authority;
+- model advice with infrastructure authority;
+- fast Star Server concurrency changes with slow CouchDB topology changes.
+
+* Observed State
+
+** StarIntel core
+
+=lost-rob0t/star-cl= is the canonical Common Lisp StarIntel 0.9.1 package consumed by Star Server. The new archive package is placed there as a separate ASDF system so downstream users can load it without the Star Server add-on lifecycle.
+
+Tracked implementation: https://github.com/lost-rob0t/star-cl/issues/15
+
+** Star Server
+
+Star Server already has trusted =init.lisp= loading, Sento actor systems, durable/outbox seams, and separate add-on lifecycle machinery. Archive retention configuration uses trusted init and server policy resolution, but the archive core does not register as an add-on.
+
+Tracked policy integration: https://github.com/lost-rob0t/starintel-server/issues/284
+
+Tracked generic auto-scale actor: https://github.com/lost-rob0t/starintel-server/issues/285
+
+Tracked fenced infrastructure actuator: https://github.com/starintel-labs/starintel-infra/issues/159
+
+** TEK9
+
+TEK9 =star-git= already has immutable LZMA packs, content-addressed IDs, custody receipts, verified-remote placement, restore planning, and hot-eviction checks. These are reused instead of creating a second revision/archive format.
+
+** Infra
+
+Infra already declares a dedicated =ingest2= CouchDB data volume and an =aws-local= LocalStack development VM. LocalStack is not promoted to production backup authority. The archive path receives its own S3-compatible local storage deployment on a storage failure domain distinct from CouchDB data.
+
+Tracked deployment: https://github.com/starintel-labs/starintel-infra/issues/157
+
+Infra #135 contains an older archive-actor topology; #157 supersedes only that archive ownership/execution portion.
+
+** Biz
+
+Biz owns commercial policy and private plugins. Billing is tracked at:
+https://github.com/starintel-labs/starintel-biz/issues/169
+
+Private autoscaling + Jev/RSI policy is tracked at:
+https://github.com/starintel-labs/starintel-biz/issues/170
+
+* External Evidence
+
+Retrieved 2026-09-20.
+
+- Apache CouchDB 3.5 backup documentation states CouchDB replication is the simplest backup approach and also states that =.couch= database files can be copied while CouchDB is running because storage is append-only. It recommends backing up secondary indexes before main database files and permits storage snapshots when the filesystem is quiesced as required: https://docs.couchdb.org/en/stable/maintenance/backups.html
+- CouchDB =_changes= is suitable for synchronization but can redeliver entries, so consumers must be idempotent: https://docs.couchdb.org/en/stable/api/database/changes.html
+- Akamai/Linode Object Lock must be enabled when the bucket is created and cannot be retrofitted through ordinary Cloud Manager/Linode API flows. A bucket without Object Lock must not be called WORM/immutable: https://techdocs.akamai.com/cloud-computing/docs/protect-logs-in-object-storage
+- Akamai documents COMPLIANCE Object Lock as preventing deletion before retention expiry and GOVERNANCE as bypassable only with special permission/explicit bypass: https://techdocs.akamai.com/cloud-computing/docs/data-protection
+- TypeSafe describes Jev as a System One model: structured state in, typed probabilistic decisions out, trained for calibrated decisions. It is an adviser shape, not an unrestricted text/action generator: https://typesafe.ai/blog/introducing-system-one-models-and-jev
+
+* Architecture
+
+#+begin_example
+                         trusted init.lisp
+                               |
+                               v
+                       archive policy resolver
+                 global / tenant / dataset / dtype
+                      target / actor proposal
+                               |
+                               v
+CouchDB -> couch-snapshot -> immutable staging
+                               |
+                               v
+                          archive-sync
+                   /           |            \
+                  v            v             v
+            local S3       TEK9/star-git    Linode S3
+          fast restore     history/catalog   cold DR
+                  \            |             /
+                   \           v            /
+                    +---- custody verifier -+
+                              |
+                              v
+                      disposable restore
+                              |
+                              v
+                       verified artifact
+                              |
+                       retention eligibility
+#+end_example
+
+Autoscaling is separate:
+
+#+begin_example
+telemetry window
+      |
+      v
+star.auto-scale actor ----> deterministic fallback controller
+      |
+      +------------------> Jev/custom decision adviser
+      |                              |
+      |                              v
+      |                       typed probabilities
+      v
+Prolog/policy verifier
+      |
+      +-- reject/hold/escalate
+      |
+      `-- approve fenced intent
+                   |
+                   v
+             trusted actuator
+             /             \
+    server workers       CouchDB topology
+       fast loop           slow gated loop
+#+end_example
+
+* Core Package: =:starintel-archive=
+
+The core package owns data and policy semantics, not service startup.
+
+Required public concepts:
+
+- =archive-policy=
+- =policy-selector=
+- =resolved-policy=
+- =backup-manifest=
+- =archive-artifact=
+- =custody-receipt=
+- =verification-receipt=
+- =retention-decision=
+- =archive-backend= protocol.
+
+Required invariants:
+
+1. Artifact IDs are content/policy-derived and idempotent.
+2. A successful PUT is not durable custody.
+3. A remote object is not verified until stat/readback/checksum policy succeeds.
+4. A backup is not restore-verified until a disposable restore succeeds.
+5. Hot/source eviction requires the resolved policy plus verified custody/restore proof.
+6. Unknown policy is fail-closed.
+7. Credentials are never serializable members of manifests or receipts.
+
+* Data Lifecycle Policy
+
+Archive lifecycle means retention/custody lifecycle, not Common Lisp add-on lifecycle.
+
+** Default policy
+
+Initial safe defaults:
+
+- archive sync: hourly;
+- full recovery snapshot: daily;
+- local fast-restore retention: 14 days;
+- remote cold retention: 365 days;
+- restore verification: weekly/sample at minimum;
+- minimum custody before any possible eviction: verified remote;
+- automatic source deletion: false;
+- legal/case hold: absolute blocker for expiration.
+
+** Trusted configuration
+
+Trusted =init.lisp= may configure global values and narrower selectors.
+
+Conceptual interface:
+
+#+begin_src lisp
+(star.archive.policy:configure-defaults
+ :snapshot-every :hourly
+ :full-snapshot-every :daily
+ :local-retention-days 14
+ :remote-retention-days 365
+ :minimum-custody :verified-remote
+ :restore-verify-every-runs 7
+ :delete-source-after-archive nil)
+
+(star.archive.policy:for-dtype "observation"
+ :remote-retention-days 730)
+
+(star.archive.policy:for-target "target:case-123"
+ :pinned t
+ :remote-retention-days 2555)
+#+end_src
+
+** Actor/plugin policy injection
+
+Server-side actors/plugins may inject bounded facts such as:
+
+#+begin_example
+archive_requested_retention(target-123, long).
+archive_hold(target-123, court_case_42).
+archive_class(dtype_observation, evidence).
+#+end_example
+
+Actor facts are proposals. The server resolves them against operator policy and capability context. A less-privileged source cannot shorten minimum retention, disable verification, remove a hold, or expand tenant/dataset scope.
+
+* Backup Execution
+
+** Job A: couch-snapshot
+
+One-shot, fenced, deterministic snapshot creation.
+
+Capture:
+
+- CouchDB database files and required system databases;
+- required configuration excluding secrets;
+- database inventory;
+- update sequence/capture boundary;
+- file sizes;
+- SHA-256 digests;
+- package/core version and policy digest.
+
+Preferred implementation may use a storage-level snapshot when available, otherwise copy CouchDB files following official backup ordering. A crash/interruption produces an incomplete run that archive-sync refuses.
+
+** Job B: archive-sync
+
+Consumes only complete snapshot manifests.
+
+Stages:
+
+1. write immutable local S3 object;
+2. update TEK9/star-git archive/catalog state;
+3. write Linode cold object;
+4. stat/readback/checksum;
+5. register custody receipt;
+6. run disposable restore according to policy;
+7. register restore-verification receipt;
+8. evaluate retention eligibility.
+
+Each stage has its own durable status so restart resumes rather than repeats ambiguous work.
+
+* Local S3
+
+Local S3 is a dedicated backup service, not LocalStack. It is optimized for fast restore and low cost and must use a storage failure domain distinct from the CouchDB data volume.
+
+The exact S3 server package is an Infra implementation choice gated by:
+
+- NixOS reproducibility;
+- S3 compatibility required by the archive backend;
+- immutable/object-version semantics where supported;
+- simple restore/export;
+- bounded memory/CPU;
+- durable storage on the large/local archive datastore.
+
+Local S3 is never the only disaster-recovery copy.
+
+* Linode Cold Tier
+
+Operator destination:
+
+#+begin_example
+bucket   = star-archive
+endpoint = star-archive.us-ord-10.linodeobjects.com
+#+end_example
+
+Preflight checks versioning/Object Lock. If Object Lock is not enabled, =star-archive= remains a remote backup copy but cannot satisfy a =WORM= custody requirement. A new lock-enabled bucket is required for WORM semantics because Object Lock must be enabled at creation.
+
+Use least-privilege write credentials for the normal job. Administrative bucket configuration and retention policy changes use a separate privileged path.
+
+* Restore Safety
+
+Durability is defined by recovery evidence.
+
+A restore drill creates a disposable CouchDB restore target and verifies:
+
+- expected databases exist;
+- expected document counts/inventory within policy;
+- sampled or full document digests;
+- attachment/content checks where applicable;
+- system/config compatibility;
+- target can be opened/read by the pinned CouchDB version.
+
+Failure blocks retention GC and raises archive-degraded state.
+
+* Billing
+
+** Plan
+
+Operator-defined model:
+
+- USD 20.00 subscription;
+- USD 15.00 included eligible API/provider COGS;
+- USD 5.00 intended base gross margin before unrelated overhead;
+- overage = actual eligible COGS + 8% service fee.
+
+Money is stored as integer micro-USD or equivalent exact integer representation. No floating point.
+
+** Settlement
+
+Every eligible provider call follows:
+
+#+begin_example
+quote -> reserve -> execute -> commit | refund
+#+end_example
+
+Reservation is concurrency-safe and idempotent. Provider final cost, included-budget debit, PAYG cost, markup, and customer charge are distinct ledger values.
+
+Platform-required backup/archive/restore verification is platform COGS by default. It does not consume a tenant's USD 15 included API budget unless an explicit product entitlement classifies that request as customer-billable. Customer-triggered premium export/restore may be billable under a separate entitlement.
+
+Biz #163 continues to hard-exempt platform owner/admin/operator customer charges while recording real COGS.
+
+* Auto-Scale Actor
+
+** Generic server contract
+
+=star.auto-scale= is a bounded supervised actor that emits typed scaling intents. It does not directly call provider APIs from a model callback.
+
+Closed actions:
+
+#+begin_example
+hold
+scale-server-out
+scale-server-in
+scale-couch-out
+scale-couch-in
+rebalance-couch
+throttle
+escalate
+#+end_example
+
+Every decision carries:
+
+- magnitude;
+- urgency;
+- confidence;
+- evidence window;
+- policy/model generation;
+- decision ID;
+- cost delta estimate;
+- fencing generation.
+
+** Separate control loops
+
+Star Server worker concurrency is a comparatively fast reversible loop.
+
+CouchDB node/shard/rebalance actions are a slow topology loop. Scale-in is blocked during unsafe health, replication backlog, disk pressure, unverified rebalance, or policy cooldown.
+
+** Deterministic fallback
+
+Model outage never disables capacity safety. A deterministic threshold/hysteresis controller remains available and may only issue actions allowed by the same Prolog policy.
+
+* Jev-Shaped Decision Adviser
+
+Jev is used as the interface model, not as authority.
+
+State includes:
+
+- queue depth/backpressure;
+- latency percentiles;
+- utilization;
+- CouchDB read/write/replication/compaction health;
+- disk growth;
+- current capacity;
+- prior changes/cooldowns;
+- COGS/budget;
+- recent SLO violations.
+
+Typed questions include:
+
+- action choice;
+- magnitude score;
+- urgency score;
+- probability that acting now violates a safety/SLO constraint;
+- confidence/uncertainty.
+
+The interface is provider-neutral =autoscale-decision/v1=. TypeSafe Jev may serve as an external adviser while available; a later custom local model can implement the exact same contract through =llm.starintel.actor=. No design assumes TypeSafe exposes custom fine-tuning until documented.
+
+* Bounded RSI
+
+RSI is offline candidate evolution, never live self-modification.
+
+#+begin_example
+immutable trajectories
+      |
+      v
+objective scoring
+      |
+      v
+candidate proposal/training/calibration
+      |
+      v
+held-out replay
+      |
+      v
+adversarial failure suite
+      |
+      v
+shadow
+      |
+      v
+bounded canary
+      |
+      v
+Prolog promotion gate
+      |
+      v
+operator approval when topology/policy affected
+      |
+      v
+promote + retain rollback artifact
+#+end_example
+
+A candidate cannot edit or approve its own safety bounds. Training data excludes credentials, secrets, and tenant document payloads.
+
+Objectives are multi-dimensional: latency/SLO, availability, backpressure, safe CouchDB topology, total COGS, scaling churn, and rollback frequency. Cost reduction cannot compensate for broken durability or availability.
+
+* RAGE Execution Slices
+
+** Slice 0 - evidence and contracts
+
+State: complete enough for implementation issue creation.
+
+Evidence:
+
+- official CouchDB backup semantics;
+- existing TEK9 custody primitives;
+- existing Star Server init/actor boundaries;
+- Akamai Object Lock constraint;
+- TypeSafe Jev structured decision contract.
+
+Gate: operator approved architecture direction on 2026-09-20.
+
+** Slice 1 - core archive package
+
+Owner: =lost-rob0t/star-cl#15=
+
+RED first:
+
+- safe defaults cannot delete;
+- incomplete upload cannot become verified;
+- policy selector precedence;
+- target/type isolation;
+- retry/idempotency.
+
+Gate: ASDF package loads independently and tests pass.
+
+** Slice 2 - server policy injection
+
+Owner: =lost-rob0t/starintel-server#284=
+
+RED first:
+
+- trusted init defaults;
+- per-dtype/per-target policy;
+- actor proposal cannot weaken minimum retention;
+- legal hold;
+- restart/digest stability.
+
+Gate: resolved policy is deterministic and auditable.
+
+** Slice 3 - infra backup jobs
+
+Owner: =starintel-labs/starintel-infra#157=
+
+RED first:
+
+- snapshot interruption;
+- S3 retry;
+- Linode capability preflight;
+- TEK9 sync retry;
+- corruption + restore failure;
+- no GC before verification.
+
+Gate: disposable end-to-end restore passes from both local S3 and remote cold copy.
+
+** Slice 4 - billing
+
+Owner: =starintel-labs/starintel-biz#169=
+
+RED first:
+
+- USD 15 pool race;
+- exact +8% PAYG;
+- replay/idempotency;
+- operator exemption;
+- platform backup is not tenant-billed.
+
+Gate: ledger recovery and concurrent reservation tests pass.
+
+** Slice 5 - generic auto-scale actor
+
+Owner: =lost-rob0t/starintel-server#285=
+
+RED first:
+
+- no oscillation;
+- stale intent fencing;
+- model outage fallback;
+- degraded CouchDB blocks scale-in;
+- duplicate actuation idempotency.
+
+Gate: deterministic fallback alone can safely run the actor.
+
+** Slice 6 - fenced infrastructure actuator
+
+Owner: =starintel-labs/starintel-infra#159=
+
+RED first:
+
+- unknown/stale intent fails before provider I/O;
+- provider retry reconciles actual state;
+- worker scale-in drains;
+- Couch scale-in is blocked until shard/replica health is safe;
+- failed post-change verification cannot report success.
+
+Gate: typed approved intent can be reconciled idempotently with separate stateless-worker and stateful-Couch semantics.
+
+** Slice 7 - private Jev/RSI scaling plugin
+
+Owner: =starintel-labs/starintel-biz#170=
+
+RED first:
+
+- model cannot bypass Prolog;
+- low confidence hold/escalate;
+- candidate cannot self-promote;
+- held-out/adversarial regression blocks release;
+- stale policy/model generation cannot actuate;
+- rollback restores previous generation.
+
+Gate: shadow then bounded canary; topology/policy promotion remains human-approved.
+
+* Cross-Repo Invariants
+
+1. No backup deletion on mere upload success.
+2. No hot/source eviction without resolved policy and required custody/restore proof.
+3. No billing state is authority for backup correctness.
+4. No model decision is infrastructure authority.
+5. No self-modifying RSI process can promote itself.
+6. No secret appears in archive manifest, model trajectory, or billing event payload.
+7. Every network/provider mutation is idempotent or fenced.
+8. Every destructive action has a generation/policy digest and audit event.
+9. Operator/admin billing exemption does not hide COGS.
+10. Remote cold storage is cost-optimized, but local restore and remote disaster copies are distinct failure domains.
+
+* Verification Matrix
+
+| Failure | Required result |
+|---------+-----------------|
+| CouchDB snapshot interrupted | incomplete; no sync |
+| Local S3 unavailable | pending; no complete state |
+| TEK9 unavailable | pending; no archive-complete state |
+| Linode unavailable | pending remote custody; local preserved |
+| Remote checksum mismatch | failed-integrity; no GC |
+| Restore verification fails | archive-degraded; no GC |
+| Billing DB unavailable | provider customer settlement pauses/fails safe; backup continues |
+| Jev unavailable | deterministic fallback |
+| Jev low confidence | hold/escalate |
+| Prolog rejects action | no actuation |
+| Stale autoscale decision | fencing rejection |
+| CouchDB unhealthy | no topology scale-in |
+| RSI candidate regresses | no promotion |
+
+* Completion
+
+This design is complete when issues #15, #157, #159, #284, #285, #169 and #170 have implementation evidence, restore evidence is recorded, and no runtime gate is inferred merely from a green build.
