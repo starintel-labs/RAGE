@@ -51,6 +51,8 @@ Tracked policy integration: https://github.com/lost-rob0t/starintel-server/issue
 
 Tracked generic auto-scale actor: https://github.com/lost-rob0t/starintel-server/issues/285
 
+Tracked fenced infrastructure actuator: https://github.com/starintel-labs/starintel-infra/issues/159
+
 ** TEK9
 
 TEK9 =star-git= already has immutable LZMA packs, content-addressed IDs, custody receipts, verified-remote placement, restore planning, and hot-eviction checks. These are reused instead of creating a second revision/archive format.
@@ -515,7 +517,21 @@ RED first:
 
 Gate: deterministic fallback alone can safely run the actor.
 
-** Slice 6 - private Jev/RSI scaling plugin
+** Slice 6 - fenced infrastructure actuator
+
+Owner: =starintel-labs/starintel-infra#159=
+
+RED first:
+
+- unknown/stale intent fails before provider I/O;
+- provider retry reconciles actual state;
+- worker scale-in drains;
+- Couch scale-in is blocked until shard/replica health is safe;
+- failed post-change verification cannot report success.
+
+Gate: typed approved intent can be reconciled idempotently with separate stateless-worker and stateful-Couch semantics.
+
+** Slice 7 - private Jev/RSI scaling plugin
 
 Owner: =starintel-labs/starintel-biz#170=
 
@@ -563,4 +579,4 @@ Gate: shadow then bounded canary; topology/policy promotion remains human-approv
 
 * Completion
 
-This design is complete when issues #15, #157, #284, #285, #169 and #170 have implementation evidence, restore evidence is recorded, and no runtime gate is inferred merely from a green build.
+This design is complete when issues #15, #157, #159, #284, #285, #169 and #170 have implementation evidence, restore evidence is recorded, and no runtime gate is inferred merely from a green build.
